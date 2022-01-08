@@ -5,6 +5,7 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 import "encoding/json"
+import "path/filepath"
 
 
 //
@@ -75,7 +76,10 @@ func (w *worker) doMapTask() {
 	prefix := fmt.Sprintf("mr-%v", w.workerID)
 	for i := 0; i < w.nReduce; ++i {
 		fileName := fmt.Sprintf("%v-*", prefix)
-		intermediateFiles[i] = os.ioutil.TempFile("", fileName)
+		intermediateFiles[i], err := os.ioutil.TempFile("", fileName)
+		if (err != nil) {
+			log.Fatalf("cannot create temp file")
+		}
 	}
 	encs := make([]*Encoder, w.nReduce)
 	for i := 0; i < w.nReduce; ++i {
@@ -98,7 +102,51 @@ func (w *worker) doMapTask() {
 }
 
 func (w *worker) doReduceTask() {
-
+	tempDir := os.TempDir()
+	pattern := fmt.Sprintf("tempDir/mr-*-%v", w.nReduce)
+	fileNames, err := filepath.Glob(pattern)
+	if err != nil {
+		log.Fatalf("cannot find match files")
+	}
+	if len(fileNames) != w.nReduce {
+		log.Fatalf("intermediate files number is incorrect")
+	}
+	files := make([]*File, w.nReduce)
+	for i := 0; i < w.nRefuce; ++i {
+		files[i], err := os.Open(fileNames[i])
+		if err != nil {
+			log.Fatalf("cannot open intermediate files")
+		}
+	}
+	decs := make([]*Decoder, w.nReduce)
+	kva := KeyValue[]{}
+	for i := 0; i < w.nReduce; ++i {
+		decs[i] = json.NewDecoder(files[i])
+		for {
+			var kv KeyValue
+			if err := decs[i].Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+	}
+	sort.Sort(ByKey(kva))
+	oname := fmt.Sprintf("mr-out-%v", w.reduceID)
+	ofile, _ := os.Create(oname)
+	for i := 0; i < len(kva); ++i {
+		j := i + 1
+		for j < len(kva) && kva[i].Key == kva[j].Key {
+			++j
+		}
+		values := []KeyValue{}
+		for k := i; k < j; ++k {
+			values = append(values, kva[k])
+		}
+		output := w.reducef(kva[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+		i = j
+	}
+	ofile.Close()
 }
 
 //
