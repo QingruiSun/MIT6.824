@@ -39,6 +39,19 @@ type RequestTaskArgs struct {
 type RequestTaskReply struct {
 	taskType int
     fileName string
+	mapID    int
+	reduceID int
+}
+
+type ReportTaskArgs struct {
+	taskType int
+	mapID    int
+	reduceID int
+	workerID int
+}
+
+type ReportTaskReply struct {
+
 }
 
 // Add your RPC definitions here.

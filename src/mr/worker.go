@@ -6,6 +6,7 @@ import "net/rpc"
 import "hash/fnv"
 import "encoding/json"
 import "path/filepath"
+import "time"
 
 
 //
@@ -30,8 +31,10 @@ type worker struct {
 	workerID int
 	mapf     func(string, string) []KeyValue
 	reducef  func(string, []string) string
-	filename string
 	nReduce  int
+	taskType int
+	fileName string
+	mapID    int
 	reduceID int
 }
 
@@ -53,12 +56,40 @@ func (w *worker) requestTask() {
     if res == false {
         log.Fatalf("cannot request task")
     }
-    w.filename = reply.filename
+	w.taskType = reply.taskType
+	if w.taskType == mapTaskType {
+		w.mapID = reply.mapID
+		w.fileName = reply.fileName
+	}
+	if w.taskType == reduceTaskType {
+		w.reduceID = reply.reduceID
+	}
 }
 
 
 func (w *worker) run() {
-	
+	for {
+		w.requestTask()
+		if w.taskType == mapTaskType {
+		    doMapTask()
+		} else if w.taskType == reduceTaskType {
+		    doReduceTask()
+		} else if w.taskType == waitTaskType {
+	        time.Sleep(500 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+}
+
+
+func (w *worker) reportTask() {
+	args := reportTaskArgs{w.taskType, w.mapID, w.reduceID, w.workerID}
+	reply := reportTaskReply{}
+	res := call("Master.ReportTask", &args, &reply)
+	if res == false {
+		log.Fatalf("worker report task failed")
+	}
 }
 
 func (w *worker) doMapTask() {
@@ -73,7 +104,7 @@ func (w *worker) doMapTask() {
 	file.Close()
 	kva := w.mapf(w.filename, string(content))
 	intermediateFiles := make([]os.*File, w.nReduce)
-	prefix := fmt.Sprintf("mr-%v", w.workerID)
+	prefix := fmt.Sprintf("mr-%v", w.mapID)
 	for i := 0; i < w.nReduce; ++i {
 		fileName := fmt.Sprintf("%v-*", prefix)
 		intermediateFiles[i], err := os.ioutil.TempFile("", fileName)
@@ -99,6 +130,7 @@ func (w *worker) doMapTask() {
 		fileName := fmt.Sprintf("%v-%v", prefix, i)
 		os.Rename(intermediateFiles[i].Name(), fileName)
 	}
+	w.reportTask()
 }
 
 func (w *worker) doReduceTask() {
@@ -147,6 +179,7 @@ func (w *worker) doReduceTask() {
 		i = j
 	}
 	ofile.Close()
+	w.reportTask()
 }
 
 //
@@ -154,9 +187,11 @@ func (w *worker) doReduceTask() {
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-		w := worker(-1, mapf, refucef)
+		w := worker{}
+		w.mapf = mapf
+		w.reducef = reducef
 		w.register()
-
+		w.run()
 }
 
 //
