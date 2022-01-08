@@ -3,13 +3,34 @@ package mr
 import "log"
 import "net"
 import "os"
+import "sync"
+import "time"
 import "net/rpc"
 import "net/http"
 
 
-type Master struct {
-	// Your definitions here.
+const (
+    idle = 0
+    progress = 1
+	completed = 2
+	mapTaskType = 0
+	reduceTaskType = 1
+)
 
+type MapTask struct {
+	filename string
+	state    int
+	workerID int
+
+}
+
+
+type Master struct {
+	mu        sync.Mutex
+	mapTasks  []MapTask
+	workerSeq int
+	nReduce   int
+	nMap      int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -24,6 +45,18 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+
+func (m *Master) RegisterWorker(args *RegisterArgs, reply *RegisterReply) {
+    m.mu.Lock()
+	m.workerSeq++
+	reply.workerID = m.workerSeq
+	m.mu.Unlock()
+	reply.nReduce = m.nReduce
+}
+
+func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) {
+  
+}
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -61,10 +94,14 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
-
-	// Your code here.
-
-
+	m.mu.Lock();
+	for i := range files {
+		mapTask = MapTask{files[i], idle, -1};
+		m.mapTasks = append(m.mapTasks, mapTask)
+	}
+    m.nReduce = nReduce
+	m.nMap = len(files)
+	m.mu.Unlock()
 	m.server()
 	return &m
 }

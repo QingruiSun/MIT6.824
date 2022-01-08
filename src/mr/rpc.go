@@ -22,6 +22,25 @@ type ExampleReply struct {
 	Y int
 }
 
+
+type RegisterArgs struct {
+
+}
+
+type RegisterReply struct {
+    workerID int
+	nReduce  int
+}
+
+type RequestTaskArgs struct {
+    workerID int
+}
+
+type RequestTaskReply struct {
+	taskType int
+    fileName string
+}
+
 // Add your RPC definitions here.
 
 
