@@ -7,7 +7,6 @@ import "sync"
 import "time"
 import "net/rpc"
 import "net/http"
-import "fmt"
 
 
 const (
@@ -69,7 +68,6 @@ func (m *Master) RegisterWorker(args *RegisterArgs, reply *RegisterReply) error 
 	reply.WorkerID = m.workerSeq
 	m.mu.Unlock()
 	reply.NReduce = m.nReduce
-	fmt.Println("register in master")
 	return nil
 }
 

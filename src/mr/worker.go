@@ -9,7 +9,7 @@ import "path/filepath"
 import "time"
 import "os"
 import "io/ioutil"
-import "sort"
+import "strings"
 
 
 //
@@ -20,19 +20,7 @@ type KeyValue struct {
 	Value string
 }
 
-type ByKey []KeyValue
 
-func (a ByKey) Len() int {
-	return len(a)
-}
-
-func (a ByKey) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
-}
-
-func (a ByKey) Less(i, j int) bool {
-	return a[i].Key < a[j].Key
-}
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -87,7 +75,6 @@ func (w *worker) requestTask() {
 func (w *worker) run() {
 	for {
 		w.requestTask()
-		time.Sleep(500 * time.Millisecond)
 		if w.taskType == mapTaskType {
 		    w.doMapTask()
 		} else if w.taskType == reduceTaskType {
@@ -121,79 +108,64 @@ func (w *worker) doMapTask() {
 	}
 	file.Close()
 	kva := w.mapf(w.fileName, string(content))
-	intermediateFiles := make([]*os.File, w.nReduce)
-	prefix := fmt.Sprintf("mr-%v", w.mapID)
-	for i := 0; i < w.nReduce; i++ {
-		fileName := fmt.Sprintf("%v-*", prefix)
-		intermediateFiles[i], err = ioutil.TempFile("", fileName)
-		if (err != nil) {
-			log.Fatalf("cannot create temp file")
-		}
+	reduces := make([][]KeyValue, w.nReduce)
+	for _, kv := range kva {
+		idx := ihash(kv.Key) % w.nReduce
+		reduces[idx] = append(reduces[idx], kv)
 	}
-	encs := make([]*json.Encoder, w.nReduce)
-	for i := 0; i < w.nReduce; i++ {
-		encs[i] = json.NewEncoder(intermediateFiles[i])
-	}
-	for _, item := range kva {
-		index := ihash(item.Key) % w.nReduce
-		err := encs[index].Encode(&item)
+	for idx, l := range reduces {
+		fileName := fmt.Sprintf("mr-%d-%d", w.mapID, idx)
+		f, err := os.Create(fileName)
 		if err != nil {
-			log.Fatalf("cannot encode %v", item)
+			log.Fatalf("cannot create temp map files")
 		}
-	}
-	for i := 0; i < w.nReduce; i++ {
-		intermediateFiles[i].Close()
-    }
-	for i := 0; i < w.nReduce; i++ {
-		fileName := fmt.Sprintf("%v-%v", prefix, i)
-		os.Rename(intermediateFiles[i].Name(), fileName)
+		enc := json.NewEncoder(f)
+		for _, kv := range l {
+			if err := enc.Encode(&kv); err != nil {
+				log.Fatalf("cannot encode ")
+			}
+
+		}
+		if err := f.Close(); err != nil {
+			log.Fatalf("cannot encode temp result")
+		}
 	}
 	w.reportTask()
 }
 
 func (w *worker) doReduceTask() {
+	maps := make(map[string][]string)
 	pattern := fmt.Sprintf("./mr-*-%v", w.reduceID)
 	fileNames, err := filepath.Glob(pattern)
 	if err != nil {
 		log.Fatalf("cannot find match files")
 	}
 	fileNums := len(fileNames)
-	files := make([]*os.File, fileNums)
 	for i := 0; i < fileNums; i++ {
-		files[i], err = os.Open(fileNames[i])
+		file, err := os.Open(fileNames[i])
 		if err != nil {
 			log.Fatalf("cannot open intermediate files")
 		}
-	}
-	decs := make([]*json.Decoder, fileNums)
-	kva := []KeyValue{}
-	for i := 0; i < fileNums; i++ {
-		decs[i] = json.NewDecoder(files[i])
+		dec := json.NewDecoder(file)
 		for {
 			var kv KeyValue
-			if err := decs[i].Decode(&kv); err != nil {
+			if err := dec.Decode(&kv); err != nil {
 				break
 			}
-			kva = append(kva, kv)
+			if _, ok := maps[kv.Key]; !ok {
+				maps[kv.Key] = make([]string, 0, 100)
+			}
+			maps[kv.Key] = append(maps[kv.Key], kv.Value)
 		}
 	}
-	sort.Sort(ByKey(kva))
-	oname := fmt.Sprintf("mr-out-%v", w.reduceID)
-	ofile, _ := os.Create(oname)
-	for i := 0; i < len(kva); i++ {
-		j := i + 1
-		for j < len(kva) && kva[i].Key == kva[j].Key {
-			j++
-		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, kva[k].Value)
-		}
-		output := w.reducef(kva[i].Key, values)
-		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-		i = j
+	res := make([]string, 0, 100)
+	for k, v := range maps {
+		res = append(res, fmt.Sprintf("%v %v\n", k, w.reducef(k, v)))
 	}
-	ofile.Close()
+	oname := fmt.Sprintf("mr-out-%d", w.reduceID)
+	if err := ioutil.WriteFile(oname, []byte(strings.Join(res, "")), 0600); err != nil {
+		log.Fatalf("cannot write reduce file");
+	}
 	w.reportTask()
 }
 
