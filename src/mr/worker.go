@@ -7,6 +7,9 @@ import "hash/fnv"
 import "encoding/json"
 import "path/filepath"
 import "time"
+import "os"
+import "io/ioutil"
+import "sort"
 
 
 //
@@ -15,6 +18,20 @@ import "time"
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int {
+	return len(a)
+}
+
+func (a ByKey) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+
+func (a ByKey) Less(i, j int) bool {
+	return a[i].Key < a[j].Key
 }
 
 //
@@ -45,24 +62,24 @@ func (w *worker) register() {
 	if res == false {
 		log.Fatalf("cannot register worker")
 	}
-	w.workerID = reply.workerID
-	w.nReduce = reply.nReduce
+	w.workerID = reply.WorkerID
+	w.nReduce = reply.NReduce
 }
 
 func (w *worker) requestTask() {
-	args := RequestTaskArgs{}
+	args := RequestTaskArgs{WorkerID: w.workerID}
     reply := RequestTaskReply{}
     res := call("Master.RequestTask", &args, &reply)
     if res == false {
         log.Fatalf("cannot request task")
     }
-	w.taskType = reply.taskType
+	w.taskType = reply.TaskType
 	if w.taskType == mapTaskType {
-		w.mapID = reply.mapID
-		w.fileName = reply.fileName
+		w.mapID = reply.MapID
+		w.fileName = reply.FileName
 	}
 	if w.taskType == reduceTaskType {
-		w.reduceID = reply.reduceID
+		w.reduceID = reply.ReduceID
 	}
 }
 
@@ -70,10 +87,11 @@ func (w *worker) requestTask() {
 func (w *worker) run() {
 	for {
 		w.requestTask()
+		time.Sleep(500 * time.Millisecond)
 		if w.taskType == mapTaskType {
-		    doMapTask()
+		    w.doMapTask()
 		} else if w.taskType == reduceTaskType {
-		    doReduceTask()
+		    w.doReduceTask()
 		} else if w.taskType == waitTaskType {
 	        time.Sleep(500 * time.Millisecond)
 		} else {
@@ -84,8 +102,8 @@ func (w *worker) run() {
 
 
 func (w *worker) reportTask() {
-	args := reportTaskArgs{w.taskType, w.mapID, w.reduceID, w.workerID}
-	reply := reportTaskReply{}
+	args := ReportTaskArgs{w.taskType, w.mapID, w.reduceID, w.workerID}
+	reply := ReportTaskReply{}
 	res := call("Master.ReportTask", &args, &reply)
 	if res == false {
 		log.Fatalf("worker report task failed")
@@ -93,40 +111,40 @@ func (w *worker) reportTask() {
 }
 
 func (w *worker) doMapTask() {
-	file, err := os.Open(w.filename)
+	file, err := os.Open(w.fileName)
 	if err != nil {
-		log.Fatalf("cannot open file %v", w.filename)
+		log.Fatalf("cannot open file %v", w.fileName)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", filename)
+		log.Fatalf("cannot read %v", w.fileName)
 	}
 	file.Close()
-	kva := w.mapf(w.filename, string(content))
-	intermediateFiles := make([]os.*File, w.nReduce)
+	kva := w.mapf(w.fileName, string(content))
+	intermediateFiles := make([]*os.File, w.nReduce)
 	prefix := fmt.Sprintf("mr-%v", w.mapID)
-	for i := 0; i < w.nReduce; ++i {
+	for i := 0; i < w.nReduce; i++ {
 		fileName := fmt.Sprintf("%v-*", prefix)
-		intermediateFiles[i], err := os.ioutil.TempFile("", fileName)
+		intermediateFiles[i], err = ioutil.TempFile("", fileName)
 		if (err != nil) {
 			log.Fatalf("cannot create temp file")
 		}
 	}
-	encs := make([]*Encoder, w.nReduce)
-	for i := 0; i < w.nReduce; ++i {
+	encs := make([]*json.Encoder, w.nReduce)
+	for i := 0; i < w.nReduce; i++ {
 		encs[i] = json.NewEncoder(intermediateFiles[i])
 	}
 	for _, item := range kva {
-		index := ihash(item.Key)
+		index := ihash(item.Key) % w.nReduce
 		err := encs[index].Encode(&item)
 		if err != nil {
 			log.Fatalf("cannot encode %v", item)
 		}
 	}
-	for i := 0; i < w.nReduce; ++i {
+	for i := 0; i < w.nReduce; i++ {
 		intermediateFiles[i].Close()
     }
-	for i := 0; i < w.nReduce; ++i {
+	for i := 0; i < w.nReduce; i++ {
 		fileName := fmt.Sprintf("%v-%v", prefix, i)
 		os.Rename(intermediateFiles[i].Name(), fileName)
 	}
@@ -134,25 +152,22 @@ func (w *worker) doMapTask() {
 }
 
 func (w *worker) doReduceTask() {
-	tempDir := os.TempDir()
-	pattern := fmt.Sprintf("tempDir/mr-*-%v", w.nReduce)
+	pattern := fmt.Sprintf("./mr-*-%v", w.reduceID)
 	fileNames, err := filepath.Glob(pattern)
 	if err != nil {
 		log.Fatalf("cannot find match files")
 	}
-	if len(fileNames) != w.nReduce {
-		log.Fatalf("intermediate files number is incorrect")
-	}
-	files := make([]*File, w.nReduce)
-	for i := 0; i < w.nRefuce; ++i {
-		files[i], err := os.Open(fileNames[i])
+	fileNums := len(fileNames)
+	files := make([]*os.File, fileNums)
+	for i := 0; i < fileNums; i++ {
+		files[i], err = os.Open(fileNames[i])
 		if err != nil {
 			log.Fatalf("cannot open intermediate files")
 		}
 	}
-	decs := make([]*Decoder, w.nReduce)
-	kva := KeyValue[]{}
-	for i := 0; i < w.nReduce; ++i {
+	decs := make([]*json.Decoder, fileNums)
+	kva := []KeyValue{}
+	for i := 0; i < fileNums; i++ {
 		decs[i] = json.NewDecoder(files[i])
 		for {
 			var kv KeyValue
@@ -165,14 +180,14 @@ func (w *worker) doReduceTask() {
 	sort.Sort(ByKey(kva))
 	oname := fmt.Sprintf("mr-out-%v", w.reduceID)
 	ofile, _ := os.Create(oname)
-	for i := 0; i < len(kva); ++i {
+	for i := 0; i < len(kva); i++ {
 		j := i + 1
 		for j < len(kva) && kva[i].Key == kva[j].Key {
-			++j
+			j++
 		}
-		values := []KeyValue{}
-		for k := i; k < j; ++k {
-			values = append(values, kva[k])
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
 		}
 		output := w.reducef(kva[i].Key, values)
 		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)

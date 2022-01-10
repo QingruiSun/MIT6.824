@@ -7,6 +7,7 @@ import "sync"
 import "time"
 import "net/rpc"
 import "net/http"
+import "fmt"
 
 
 const (
@@ -62,39 +63,41 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 
-func (m *Master) RegisterWorker(args *RegisterArgs, reply *RegisterReply) {
+func (m *Master) RegisterWorker(args *RegisterArgs, reply *RegisterReply) error {
     m.mu.Lock()
 	m.workerSeq++
-	reply.workerID = m.workerSeq
+	reply.WorkerID = m.workerSeq
 	m.mu.Unlock()
-	reply.nReduce = m.nReduce
+	reply.NReduce = m.nReduce
+	fmt.Println("register in master")
+	return nil
 }
 
-func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) {
+func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.taskPhase == mapPhase {
 		for i := range m.mapTasks {
 			if m.mapTasks[i].state == idle {
-				reply.taskType = mapTaskType
-				reply.mapID = m.mapTasks[i].mapID
-				reply.fileName = m.mapTasks[i].fileName
+				reply.TaskType = mapTaskType
+				reply.MapID = m.mapTasks[i].mapID
+				reply.FileName = m.mapTasks[i].fileName
 				m.mapTasks[i].state = progress
 				m.mapTasks[i].startTime = time.Now()
-				m.allocateMap++
-				if m.allocateMap == m.nMap {
+				m.allocatedMap++
+				if m.allocatedMap == m.nMap {
 					m.taskPhase = waitMapPhase
 				}
 				break
 			}
 		}
 	} else if m.taskPhase == waitMapPhase {
-		reply.taskType = waitTaskType
+		reply.TaskType = waitTaskType
 	} else if m.taskPhase == reducePhase {
 		for i := range m.reduceTasks {
 			if m.reduceTasks[i].state == idle {
-				reply.taskType = reduceTaskType
-				reply.reduceID = i
+				reply.TaskType = reduceTaskType
+				reply.ReduceID = i
 				m.reduceTasks[i].state = progress
 				m.reduceTasks[i].startTime = time.Now()
 				m.allocatedReduce++
@@ -105,30 +108,32 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) {
 			}
 		}
 	} else if m.taskPhase == waitReducePhase {
-		reply.taskType = waitTaskType
+		reply.TaskType = waitTaskType
 	} else {
-		reply.taskType = doneTaskType
+		reply.TaskType = doneTaskType
 	}
+	return nil
 }
 
-func (m *Master) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) {
-	if args.taskType == mapTaskType {
+func (m *Master) ReportTask(args *ReportTaskArgs, reply *ReportTaskReply) error {
+	if args.TaskType == mapTaskType {
 		m.mu.Lock()
-		m.mapTasks[args.mapID].state = completed
+		m.mapTasks[args.MapID].state = completed
 		m.completedMap++
 		if m.completedMap == m.nMap {
 			m.taskPhase = reducePhase
 		}
 		m.mu.Unlock()
-	} else if args.taskType == reduceTaskType {
+	} else if args.TaskType == reduceTaskType {
 		m.mu.Lock()
-		m.mapTasks[args.reduceID].state = completed
+		m.reduceTasks[args.ReduceID].state = completed
 		m.completedReduce++
 		if m.completedReduce == m.nReduce {
 			m.taskPhase = donePhase
 		}
 		m.mu.Unlock()
 	}
+	return nil
 }
 
 //
@@ -164,7 +169,7 @@ func (m *Master) schedule() {
 		time.Sleep(1000 * time.Millisecond)
 		m.mu.Lock()
 		if (m.taskPhase == mapPhase) || (m.taskPhase == waitMapPhase) {
-			for i := 0; i < len(m.mapTasks); ++i {
+			for i := 0; i < len(m.mapTasks); i++ {
 				if (m.mapTasks[i].state == progress) && (time.Now().Sub(m.mapTasks[i].startTime).Seconds() >= 10) {
 					m.mapTasks[i].state = idle
 					m.allocatedMap--
@@ -175,7 +180,7 @@ func (m *Master) schedule() {
 			}
 		}
 		if (m.taskPhase == reducePhase) || (m.taskPhase == waitReducePhase) {
-			for i := 0; i < len(m.reduceTasks) ++i {
+			for i := 0; i < len(m.reduceTasks); i++ {
 				if (m.reduceTasks[i].state == progress) && (time.Now().Sub(m.reduceTasks[i].startTime).Seconds() >= 10) {
 					m.reduceTasks[i].state = idle
 					m.allocatedReduce--
@@ -201,14 +206,14 @@ func MakeMaster(files []string, nReduce int) *Master {
 		mapTask := Task{taskType: mapTaskType, fileName: files[i], mapID: i, state: idle}
 		m.mapTasks = append(m.mapTasks, mapTask)
 	}
-    m.nReduce = nReduce
+	m.nReduce = nReduce
 	m.nMap = len(files)
-	for i := 0; i < nReduce; ++i {
+	for i := 0; i < nReduce; i++ {
 		reduceTask := Task{taskType: reduceTaskType, reduceID: i, state: idle}
 		m.reduceTasks = append(m.reduceTasks, reduceTask)
 	}
 	m.mu.Unlock()
 	m.server()
-	go schedule()
+	go m.schedule()
 	return &m
 }

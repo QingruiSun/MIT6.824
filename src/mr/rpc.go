@@ -28,26 +28,26 @@ type RegisterArgs struct {
 }
 
 type RegisterReply struct {
-    workerID int
-	nReduce  int
+	WorkerID int
+	NReduce  int
 }
 
 type RequestTaskArgs struct {
-    workerID int
+	WorkerID int
 }
 
 type RequestTaskReply struct {
-	taskType int
-    fileName string
-	mapID    int
-	reduceID int
+	TaskType int
+	FileName string
+	MapID    int
+	ReduceID int
 }
 
 type ReportTaskArgs struct {
-	taskType int
-	mapID    int
-	reduceID int
-	workerID int
+	TaskType int
+	MapID    int
+	ReduceID int
+	WorkerID int
 }
 
 type ReportTaskReply struct {
